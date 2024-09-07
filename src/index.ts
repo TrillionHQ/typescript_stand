@@ -1,5 +1,13 @@
 import * as tf from '@tensorflow/tfjs';
 
+
+const maxDistance = 38
+const  kernelHeight = maxDistance * 2
+const kernelWidth = Math.floor(maxDistance / 15)
+const offset = Math.floor(maxDistance / 3)
+const threshold_value = 0.5
+const minDistance_value = 5
+
 function createRectangularKernel(height: number, width: number, angleDeg: number): tf.Tensor {
   const angleRad = angleDeg * (Math.PI / 180); // перевод градусов в радианы
 
@@ -39,7 +47,7 @@ function createRectangularKernel(height: number, width: number, angleDeg: number
   return tf.div(kernel, sumKernel);
 }
 
-function findLocalMaxima(arr: tf.Tensor1D, threshold: number = 0.5, minDistance: number = 10): Promise<number[]> {
+function findLocalMaxima(arr: tf.Tensor1D, threshold: number = threshold_value, minDistance: number = minDistance_value): Promise<number[]> {
     return arr.array().then((arrData) => {
       // Находим индексы пиков — элементов, которые больше своих соседей
       const peaks: number[] = [];
@@ -159,10 +167,10 @@ function findLocalMaxima(arr: tf.Tensor1D, threshold: number = 0.5, minDistance:
     pointX: number,
     pointY: number,
     angleDeg: number,
-    kernelHeight: number = 15,
-    kernelWidth: number = 7,
-    offset: number = 30,
-    maxDistance: number = 70
+    kernelHeight: number = 30 * 2,
+    kernelWidth: number = Math.floor(30 / 15),
+    offset: number = Math.floor(30 / 3),
+    maxDistance: number = 30
   ): Promise<[([number, number] | null), ([number, number] | null), number, number]> {
   
     const perpAngle = angleDeg + 90;
@@ -217,7 +225,7 @@ function findLocalMaxima(arr: tf.Tensor1D, threshold: number = 0.5, minDistance:
     const sinPerp = Math.sin(perpAngle);
   
     // 1. Нарисовать линию поиска (желтая линия)
-    const leftSearchEnd = [
+   /*  const leftSearchEnd = [
       Math.floor(centerX - maxDistance * cosPerp),
       Math.floor(centerY - maxDistance * sinPerp),
     ];
@@ -231,7 +239,7 @@ function findLocalMaxima(arr: tf.Tensor1D, threshold: number = 0.5, minDistance:
     ctx.beginPath();
     ctx.moveTo(leftSearchEnd[0], leftSearchEnd[1]);
     ctx.lineTo(rightSearchEnd[0], rightSearchEnd[1]);
-    ctx.stroke();
+    ctx.stroke(); */
   
     // 2. Нарисовать два прямоугольника слева и справа от точки поиска
     const boxWidth = maxDistance - offset;
@@ -387,10 +395,7 @@ function postprocessAndDisplay(
                 overlayCtx.arc(centerX, centerY, 5, 0, 2 * Math.PI);
                 overlayCtx.fill();
 
-                // Отображаем диапазон поиска
-                const maxDistance = 80;
-                const kernelHeight = maxDistance * 2;
-                const offset = Math.floor(maxDistance / 3);
+                
                 drawSearchRange(overlayCtx, centerX, centerY, angleDeg, maxDistance, kernelHeight, offset);
 
                 // Рисуем найденные края пальца
@@ -428,12 +433,12 @@ async function run() {
 
         const normalizedPrediction = minMaxNormalize(output) as tf.Tensor4D;
 
-        const points = [[282, 179], [272, 234], [244, 276]];
+        const points = [[295, 186], [280, 240], [244, 276]];
         const angleDeg = 35;
 
         // Используем await перед вызовом findFingerWidthImproved, так как это асинхронная функция
         for (const [pointX, pointY] of points) {
-            const [leftEdge, rightEdge] = await findFingerWidthImproved(normalizedPrediction, pointX, pointY, angleDeg);
+            const [leftEdge, rightEdge] = await findFingerWidthImproved(normalizedPrediction, pointX, pointY, angleDeg, kernelHeight, kernelWidth, offset, maxDistance);
             postprocessAndDisplay(normalizedPrediction, 'imageCanvas', 'overlayCanvas', pointX, pointY, angleDeg, leftEdge, rightEdge);
         }
     };
