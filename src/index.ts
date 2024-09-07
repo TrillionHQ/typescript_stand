@@ -17,7 +17,40 @@ function preprocessImage(imageElement: HTMLImageElement): tf.Tensor {
         .toFloat()
         .div(255.0)
         .expandDims();
-    return tensor
+    return tensor;
+}
+
+// Create a rectangular convolution kernel
+function createRectangularKernel(height: number, width: number, angleDeg: number): tf.Tensor {
+    const angle = angleDeg * (Math.PI / 180);
+    const center = [Math.floor(height / 2), Math.floor(width / 2)];
+    const y = tf.range(0, height).expandDims(1).tile([1, width]);
+    const x = tf.range(0, width).expandDims(0).tile([height, 1]);
+    const xRot = x.sub(center[1]).mul(tf.cos(angle)).sub(y.sub(center[0]).mul(tf.sin(angle)));
+    const yRot = x.sub(center[1]).mul(tf.sin(angle)).add(y.sub(center[0]).mul(tf.cos(angle)));
+    const kernel = xRot.abs().less(width / 2).logicalAnd(yRot.abs().less(height / 2)).toFloat();
+    return kernel.div(tf.sum(kernel));
+}
+
+// Improved edge detection based on convolution
+function findFingerEdges(conv: tf.Tensor2D, pointX: number, pointY: number, cosAngle: number, sinAngle: number, threshold: number, maxDistance: number): [number, number] | null {
+    for (let i = 0; i < maxDistance; i++) {
+        const x = Math.round(pointX + i * cosAngle);
+        const y = Math.round(pointY + i * sinAngle);
+
+        if (x < 0 || x >= conv.shape[1] || y < 0 || y >= conv.shape[0]) {
+            break;
+        }
+
+        const valueTensor = conv.slice([y, x], [1, 1]);
+        const value = valueTensor.dataSync()[0];
+        valueTensor.dispose();
+
+        if (value > threshold) {
+            return [x, y];
+        }
+    }
+    return null;
 }
 
 // Display original image on canvas
@@ -35,71 +68,26 @@ function displayOriginalImage(imageElement: HTMLImageElement, canvasId: string):
     ctx.drawImage(imageElement, 0, 0, canvas.width, canvas.height);
 }
 
-// Create a convolution kernel
-function createKernel(size: number, angleDeg: number): tf.Tensor {
-    const angle = angleDeg * (Math.PI / 180);
-    const center = Math.floor(size / 2);
-    const x = tf.range(0, size).expandDims(1).tile([1, size]);
-    const y = tf.range(0, size).expandDims(0).tile([size, 1]);
-    const line = tf.tan(angle).mul(x.sub(center)).add(y.sub(center));
-    const kernel = line.abs().less(0.5).toFloat();
-    const normalizedKernel = kernel.div(tf.sum(kernel));
-    return normalizedKernel;
-}
 
-// Load the TensorFlow.js model
-async function loadModel(): Promise<tf.GraphModel> {
-    const model = await tf.loadGraphModel('Daniils_sept_6/model.json');
-    console.log('Model loaded successfully.');
-    return model;
-}
-
-// Find edges of the finger based on convolution
-function findFingerEdges(conv: tf.Tensor2D, pointX: number, pointY: number, cosAngle: number, sinAngle: number, threshold: number, maxDistance: number): [number, number] | null {
-    
-    for (let i = 1; i < maxDistance; i++) {
-        const x = Math.round(pointX + i * cosAngle);
-        const y = Math.round(pointY + i * sinAngle);
-
-if (x < 0 || x >= conv.shape[1] || y < 0 || y >= conv.shape[0]) {
-    break;
-}
-
-        const valueTensor = conv.slice([y, x], [1, 1]);
-        const value = valueTensor.dataSync()[0];
-        valueTensor.dispose();
-
-        if (value > threshold) {
-            return [x, y];
-        }
-    }
-    return null;
-}
-
-// Find the width of the finger from the edges
-function findFingerWidth(prediction: tf.Tensor4D, pointX: number, pointY: number, angleDeg: number, kernelSize: number = 11, threshold: number = 0.5, maxDistance: number = 50): [[number, number] | null, [number, number] | null] {
+// Compute the width of the finger using convolution with the new kernel
+function findFingerWidth(prediction: tf.Tensor4D, pointX: number, pointY: number, angleDeg: number, kernelHeight: number = 15, kernelWidth: number = 7, threshold: number = 0.1, maxDistance: number = 50): [[number, number] | null, [number, number] | null] {
     const perpAngle = angleDeg + 90;
     const cosPerp = Math.cos(perpAngle * (Math.PI / 180));
     const sinPerp = Math.sin(perpAngle * (Math.PI / 180));
 
-    const squeezedPrediction = prediction.squeeze() as unknown as tf.Tensor2D;
-    const leftKernel = createKernel(kernelSize, perpAngle);
+    const leftKernel = createRectangularKernel(kernelHeight, kernelWidth, perpAngle) as tf.Tensor2D;
+    const rightKernel = tf.reverse2d(leftKernel);
 
-    const conv = tf
-        .conv2d(
-            squeezedPrediction.expandDims(0).expandDims(-1) as unknown as tf.Tensor4D,
-            leftKernel.expandDims(-1).expandDims(-1) as unknown as tf.Tensor4D,
-            1,
-            'same'
-        )
-        .squeeze() as unknown as tf.Tensor2D;
+    const convLeft = tf.conv2d(prediction as tf.Tensor4D, leftKernel.expandDims(-1).expandDims(-1) as tf.Tensor4D, 1, 'same').squeeze();
+    const convRight = tf.conv2d(prediction as tf.Tensor4D, rightKernel.expandDims(-1).expandDims(-1) as tf.Tensor4D, 1, 'same').squeeze();
 
-    const leftEdge = findFingerEdges(conv, pointX, pointY, -cosPerp, -sinPerp, threshold, maxDistance);
-    const rightEdge = findFingerEdges(conv, pointX, pointY, cosPerp, sinPerp, threshold, maxDistance);
+    const leftEdge = findFingerEdges(convLeft as tf.Tensor2D, pointX, pointY, -cosPerp, -sinPerp, threshold, maxDistance);
+    const rightEdge = findFingerEdges(convRight as tf.Tensor2D, pointX, pointY, cosPerp, sinPerp, threshold, maxDistance);
 
-    squeezedPrediction.dispose();
+    convLeft.dispose();
+    convRight.dispose();
     leftKernel.dispose();
-    conv.dispose();
+    rightKernel.dispose();
 
     return [leftEdge, rightEdge];
 }
@@ -154,7 +142,8 @@ function calculateFingerWidth(leftEdge: [number, number] | null, rightEdge: [num
 
 // Main function to execute the logic
 async function run() {
-    const model = await loadModel();
+    const model = await tf.loadGraphModel('Daniils_sept_6/model.json');
+    console.log('Model loaded successfully.');
     const imageElement = document.createElement('img');
     imageElement.src = 'hand.jpg'; // Path to your image file
     document.body.appendChild(imageElement);
@@ -179,4 +168,3 @@ async function run() {
 }
 
 run().catch(console.error);
-
